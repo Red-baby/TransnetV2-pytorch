@@ -1,7 +1,10 @@
 import argparse
+import csv
+import json
+import random
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -46,7 +49,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-many-hot", action="store_true", help="Disable many_hot auxiliary head.")
     parser.add_argument("--many-hot-weight", type=float, default=0.5, help="Loss weight for many_hot head.")
     parser.add_argument("--clip-grad", type=float, default=1.0, help="Gradient clipping (L2 norm).")
+    parser.add_argument("--auto-split", action="store_true", help="Automatically split train-manifest 9:1 into train/val.")
+    parser.add_argument("--split-seed", type=int, default=42, help="Random seed for auto split.")
     return parser.parse_args()
+
+
+def ensure_metrics_logger(path: Path, fieldnames: List[str]) -> None:
+    """Create CSV file with header if not exists."""
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+
+def append_metrics(path: Path, row: Dict[str, object], fieldnames: List[str]) -> None:
+    with path.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writerow(row)
+
+
+def autosplit_manifest(manifest: Path, output_dir: Path, seed: int, train_ratio: float = 0.9) -> Tuple[Path, Path]:
+    """Split a single manifest into train/val by ratio; returns paths to new manifests."""
+    if not manifest.is_file():
+        raise FileNotFoundError(f"Manifest not found: {manifest}")
+    lines = [ln for ln in manifest.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        raise ValueError(f"Manifest has too few entries to split: {manifest}")
+    rnd = random.Random(seed)
+    rnd.shuffle(lines)
+    split_idx = int(len(lines) * train_ratio)
+    train_lines = lines[:split_idx]
+    val_lines = lines[split_idx:]
+
+    split_dir = output_dir / "splits"
+    split_dir.mkdir(parents=True, exist_ok=True)
+    train_path = split_dir / "train_split.jsonl"
+    val_path = split_dir / "val_split.jsonl"
+    train_path.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
+    val_path.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
+    print(f"Auto-split manifest: {manifest} -> {train_path} ({len(train_lines)} lines), {val_path} ({len(val_lines)} lines)")
+    return train_path, val_path
 
 
 def load_model(args: argparse.Namespace, device: torch.device) -> TransNetV2:
@@ -134,8 +177,19 @@ def train():
     device = torch.device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Auto split if requested and no explicit val manifest
+    train_manifest_path = args.train_manifest
+    val_manifest_path = args.val_manifest
+    if args.auto_split:
+        if args.val_manifest:
+            print("Warning: --auto-split is set but --val-manifest provided; using provided val-manifest.", flush=True)
+        else:
+            train_manifest_path, val_manifest_path = autosplit_manifest(
+                manifest=args.train_manifest, output_dir=args.output_dir, seed=args.split_seed, train_ratio=0.9
+            )
+
     train_loader = make_dataloader(
-        manifest=args.train_manifest,
+        manifest=train_manifest_path,
         window=args.window,
         stride=args.stride,
         resize_hw=(27, 48),
@@ -145,7 +199,7 @@ def train():
     )
     val_loader = (
         make_dataloader(
-            manifest=args.val_manifest,
+            manifest=val_manifest_path,
             window=args.window,
             stride=args.stride,
             resize_hw=(27, 48),
@@ -153,13 +207,55 @@ def train():
             num_workers=args.num_workers,
             shuffle=False,
         )
-        if args.val_manifest
+        if val_manifest_path
         else None
     )
 
     model = load_model(args, device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    metrics_path = args.output_dir / "metrics.csv"
+    fieldnames = [
+        "phase",
+        "epoch",
+        "step",
+        "global_step",
+        "loss",
+        "loss_main",
+        "loss_many_hot",
+        "precision",
+        "recall",
+        "f1",
+        "lr",
+    ]
+    ensure_metrics_logger(metrics_path, fieldnames)
+
+    # Initial evaluation before training starts
+    if val_loader:
+        init_metrics = evaluate(model, val_loader, device, criterion, args.many_hot_weight)
+        append_metrics(
+            metrics_path,
+            {
+                "phase": "val",
+                "epoch": 0,
+                "step": "",
+                "global_step": 0,
+                "loss": init_metrics["loss"],
+                "loss_main": init_metrics["loss_main"],
+                "loss_many_hot": init_metrics["loss_many_hot"],
+                "precision": init_metrics["precision"],
+                "recall": init_metrics["recall"],
+                "f1": init_metrics["f1"],
+                "lr": optimizer.param_groups[0]["lr"],
+            },
+            fieldnames,
+        )
+        print(
+            f"[Val-before-train] loss={init_metrics['loss']:.4f} f1={init_metrics['f1']:.4f} "
+            f"p={init_metrics['precision']:.4f} r={init_metrics['recall']:.4f}",
+            flush=True,
+        )
 
     global_step = 0
     for epoch in range(1, args.epochs + 1):
@@ -188,6 +284,23 @@ def train():
                     f"lr {optimizer.param_groups[0]['lr']:.2e}"
                 )
                 pbar.set_postfix_str(msg)
+                append_metrics(
+                    metrics_path,
+                    {
+                        "phase": "train",
+                        "epoch": epoch,
+                        "step": step,
+                        "global_step": global_step,
+                        "loss": loss.item(),
+                        "loss_main": metrics.get("loss_main", 0.0),
+                        "loss_many_hot": metrics.get("loss_many_hot", 0.0),
+                        "precision": "",
+                        "recall": "",
+                        "f1": "",
+                        "lr": optimizer.param_groups[0]["lr"],
+                    },
+                    fieldnames,
+                )
 
         if val_loader and (epoch % args.val_every == 0):
             val_metrics = evaluate(model, val_loader, device, criterion, args.many_hot_weight)
@@ -195,6 +308,23 @@ def train():
                 f"[Val] Epoch {epoch} loss={val_metrics['loss']:.4f} "
                 f"f1={val_metrics['f1']:.4f} p={val_metrics['precision']:.4f} r={val_metrics['recall']:.4f}",
                 flush=True,
+            )
+            append_metrics(
+                metrics_path,
+                {
+                    "phase": "val",
+                    "epoch": epoch,
+                    "step": "",
+                    "global_step": global_step,
+                    "loss": val_metrics["loss"],
+                    "loss_main": val_metrics["loss_main"],
+                    "loss_many_hot": val_metrics["loss_many_hot"],
+                    "precision": val_metrics["precision"],
+                    "recall": val_metrics["recall"],
+                    "f1": val_metrics["f1"],
+                    "lr": optimizer.param_groups[0]["lr"],
+                },
+                fieldnames,
             )
 
         if epoch % args.save_every == 0:
