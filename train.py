@@ -152,7 +152,8 @@ def evaluate(
     print("[Val] Evaluation started", flush=True)
     model.eval()
     total_loss, total_main, total_aux, total_tp, total_fp, total_fn, n_batches = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0
-    for batch in dataloader:
+    val_bar = tqdm(dataloader, desc="Val", ncols=120)
+    for batch in val_bar:
         videos = batch["video"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
         many_hot = batch["many_hot"].to(device, non_blocking=True)
