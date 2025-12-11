@@ -94,7 +94,21 @@ class ShotDataset(Dataset):
             labels = entry["labels"]
             if len(labels) < window:
                 continue
-            starts = list(range(0, len(labels) - window + 1, stride))
+            # 沿用 TF 版策略：以转场锚点为中心取窗口，不足窗口的样本直接跳过
+            anchors = [i for i, v in enumerate(labels) if v == 1]
+            starts: List[int]
+            if anchors:
+                starts = []
+                for a in anchors:
+                    start = max(0, a - window // 2)
+                    if start + window > len(labels):
+                        continue  # 无法取满窗口则跳过
+                    starts.append(start)
+                # 去重，避免多次命中相同 start
+                starts = list(dict.fromkeys(starts))
+            else:
+                # 无锚点时退回滑窗策略
+                starts = list(range(0, len(labels) - window + 1, stride))
             if shuffle:
                 rng.shuffle(starts)
             self.index.extend((entry_idx, s) for s in starts)
