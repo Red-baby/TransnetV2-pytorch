@@ -73,6 +73,7 @@ def autosplit_manifest(manifest: Path, output_dir: Path, seed: int, train_ratio:
     """Split a single manifest into train/val by ratio; returns paths to new manifests."""
     if not manifest.is_file():
         raise FileNotFoundError(f"Manifest not found: {manifest}")
+    print(f"[Split] Reading manifest {manifest.resolve()}", flush=True)
     lines = [ln for ln in manifest.read_text(encoding="utf-8").splitlines() if ln.strip()]
     if len(lines) < 2:
         raise ValueError(f"Manifest has too few entries to split: {manifest}")
@@ -88,8 +89,16 @@ def autosplit_manifest(manifest: Path, output_dir: Path, seed: int, train_ratio:
     val_path = split_dir / "val_split.jsonl"
     train_path.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
     val_path.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
-    print(f"Auto-split manifest: {manifest} -> {train_path} ({len(train_lines)} lines), {val_path} ({len(val_lines)} lines)")
+    print(
+        f"[Split] Auto-split manifest: {manifest} -> {train_path} ({len(train_lines)} lines), "
+        f"{val_path} ({len(val_lines)} lines)",
+        flush=True,
+    )
     return train_path, val_path
+
+
+def manifest_line_count(manifest: Path) -> int:
+    return sum(1 for ln in manifest.read_text(encoding="utf-8").splitlines() if ln.strip())
 
 
 def load_model(args: argparse.Namespace, device: torch.device) -> TransNetV2:
@@ -101,6 +110,7 @@ def load_model(args: argparse.Namespace, device: torch.device) -> TransNetV2:
         dropout_rate=args.dropout,
     )
     if args.weights:
+        print(f"[Model] Loading weights from {args.weights}", flush=True)
         state = torch.load(args.weights, map_location=device)
         # allow either pure state_dict or checkpoint dict
         state = state["model_state"] if "model_state" in state else state
@@ -139,6 +149,7 @@ def evaluate(
     criterion: nn.Module,
     many_hot_weight: float,
 ) -> Dict[str, float]:
+    print("[Val] Evaluation started", flush=True)
     model.eval()
     total_loss, total_main, total_aux, total_tp, total_fp, total_fn, n_batches = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0
     for batch in dataloader:
@@ -162,6 +173,7 @@ def evaluate(
     precision = total_tp / (total_tp + total_fp + 1e-8)
     recall = total_tp / (total_tp + total_fn + 1e-8)
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    print("[Val] Evaluation finished", flush=True)
     return {
         "loss": total_loss / max(n_batches, 1),
         "loss_main": total_main / max(n_batches, 1),
@@ -176,6 +188,7 @@ def train():
     args = parse_args()
     device = torch.device(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[Args] {args}", flush=True)
 
     # Auto split if requested and no explicit val manifest
     train_manifest_path = args.train_manifest
@@ -187,6 +200,15 @@ def train():
             train_manifest_path, val_manifest_path = autosplit_manifest(
                 manifest=args.train_manifest, output_dir=args.output_dir, seed=args.split_seed, train_ratio=0.9
             )
+
+    # Manifest stats
+    train_count = manifest_line_count(train_manifest_path)
+    print(f"[Data] Train manifest: {train_manifest_path.resolve()} ({train_count} entries)", flush=True)
+    if val_manifest_path:
+        val_count = manifest_line_count(val_manifest_path)
+        print(f"[Data] Val manifest:   {val_manifest_path.resolve()} ({val_count} entries)", flush=True)
+    else:
+        val_count = 0
 
     train_loader = make_dataloader(
         manifest=train_manifest_path,
@@ -210,6 +232,9 @@ def train():
         if val_manifest_path
         else None
     )
+    print(f"[Data] Train loader batches: {len(train_loader)}", flush=True)
+    if val_loader:
+        print(f"[Data] Val loader batches:   {len(val_loader)}", flush=True)
 
     model = load_model(args, device)
     criterion = nn.BCEWithLogitsLoss()
@@ -233,6 +258,7 @@ def train():
 
     # Initial evaluation before training starts
     if val_loader:
+        print("[Val] Running initial validation before training...", flush=True)
         init_metrics = evaluate(model, val_loader, device, criterion, args.many_hot_weight)
         append_metrics(
             metrics_path,
@@ -260,7 +286,9 @@ def train():
     global_step = 0
     for epoch in range(1, args.epochs + 1):
         model.train()
+        print(f"[Train] Starting epoch {epoch}/{args.epochs}", flush=True)
         pbar = tqdm(enumerate(train_loader, start=1), total=len(train_loader), desc=f"Epoch {epoch}", ncols=120)
+        first_batch_loaded = False
         for step, batch in pbar:
             videos = batch["video"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
@@ -276,6 +304,9 @@ def train():
             optimizer.step()
 
             global_step += 1
+            if not first_batch_loaded:
+                print(f"[Train] First batch loaded (epoch {epoch}, step {step})", flush=True)
+                first_batch_loaded = True
             if step % args.log_every == 0:
                 msg = (
                     f"ep {epoch} step {step}/{len(train_loader)} "
