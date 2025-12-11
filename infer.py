@@ -29,7 +29,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def _read_all_frames_from_dir(frames_dir: Path, resize_hw: Tuple[int, int]) -> np.ndarray:
-    from training_pytorch.data import _read_image  # lazy import to reuse resize+RGB
+    # Lazy import from local module `data` (same directory) so this file can be
+    # executed directly from inside the training_pytorch folder or from elsewhere.
+    from data import _read_image  # lazy import to reuse resize+RGB
 
     files = sorted(frames_dir.glob("*"))
     if not files:

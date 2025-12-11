@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent
+# Ensure the script directory is on sys.path so local imports like `from data import ...` work
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
@@ -21,7 +22,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-manifest", type=Path, required=True, help="Path to JSONL manifest for training.")
     parser.add_argument("--val-manifest", type=Path, help="Optional JSONL manifest for validation.")
     parser.add_argument("--weights", type=Path, help="Pretrained PyTorch weights (from convert_weights.py).")
-    parser.add_argument("--output-dir", type=Path, default=Path("runs/pytorch"), help="Directory to save checkpoints.")
+    # By default save outputs inside the `training_pytorch` folder so the script can be
+    # executed from that folder (or from elsewhere) without requiring changing cwd.
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=ROOT / "runs" / "pytorch",
+        help="Directory to save checkpoints (default: training_pytorch/runs/pytorch).",
+    )
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
