@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parent
@@ -36,8 +37,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        default="cosine",
+        choices=["none", "cosine", "step"],
+        help="LR scheduler type: cosine (default), step, or none.",
+    )
+    parser.add_argument("--lr-step-size", type=int, default=10, help="StepLR step size (epochs).")
+    parser.add_argument("--lr-gamma", type=float, default=0.5, help="LR decay for StepLR.")
     parser.add_argument("--window", type=int, default=100, help="Sliding window length (frames).")
     parser.add_argument("--stride", type=int, default=25, help="Stride between windows (frames).")
     parser.add_argument("--num-workers", type=int, default=4)
@@ -260,6 +270,15 @@ def train():
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     start_epoch = 1
     global_step = 0
+    scheduler = None
+    if args.lr_scheduler == "cosine":
+        scheduler = CosineAnnealingLR(optimizer, T_max=max(args.epochs - 1, 1), eta_min=args.lr * 0.1)
+        print(f"[LR] Using CosineAnnealingLR T_max={max(args.epochs - 1, 1)} eta_min={args.lr*0.1:.2e}", flush=True)
+    elif args.lr_scheduler == "step":
+        scheduler = StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+        print(f"[LR] Using StepLR step_size={args.lr_step_size} gamma={args.lr_gamma}", flush=True)
+    else:
+        print("[LR] No scheduler (constant LR)", flush=True)
 
     if args.resume:
         print(f"[Resume] Loading checkpoint from {args.resume}", flush=True)
@@ -268,6 +287,8 @@ def train():
         model.load_state_dict(state, strict=False)
         if "optimizer_state" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer_state"])
+        if "scheduler_state" in ckpt and scheduler is not None:
+            scheduler.load_state_dict(ckpt["scheduler_state"])
         start_epoch = ckpt.get("epoch", 0) + 1
         global_step = ckpt.get("global_step", 0)
         print(f"[Resume] Resuming from epoch {start_epoch}, global_step {global_step}", flush=True)
@@ -406,11 +427,16 @@ def train():
                     "epoch": epoch,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict() if scheduler else None,
+                    "global_step": global_step,
                 },
                 ckpt_path,
             )
             torch.save(model.state_dict(), args.output_dir / "last_state_dict.pt")
             print(f"Saved checkpoint to {ckpt_path}")
+
+        if scheduler is not None:
+            scheduler.step()
 
 
 if __name__ == "__main__":
