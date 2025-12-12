@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-manifest", type=Path, required=True, help="Path to JSONL manifest for training.")
     parser.add_argument("--val-manifest", type=Path, help="Optional JSONL manifest for validation.")
     parser.add_argument("--weights", type=Path, help="Pretrained PyTorch weights (from convert_weights.py).")
+    parser.add_argument("--resume", type=Path, help="Resume from checkpoint (loads model+optimizer+epoch).")
     # By default save outputs inside the `training_pytorch` folder so the script can be
     # executed from that folder (or from elsewhere) without requiring changing cwd.
     parser.add_argument(
@@ -67,6 +68,23 @@ def append_metrics(path: Path, row: Dict[str, object], fieldnames: List[str]) ->
     with path.open("a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writerow(row)
+
+
+def get_last_global_step(path: Path) -> int:
+    """Best-effort recovery of the last logged global_step from metrics.csv."""
+    if not path.is_file():
+        return 0
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            steps = [
+                int(row["global_step"])
+                for row in reader
+                if row.get("phase") == "train" and row.get("global_step", "").isdigit()
+            ]
+        return max(steps) if steps else 0
+    except Exception:
+        return 0
 
 
 def autosplit_manifest(manifest: Path, output_dir: Path, seed: int, train_ratio: float = 0.9) -> Tuple[Path, Path]:
@@ -240,6 +258,19 @@ def train():
     model = load_model(args, device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    start_epoch = 1
+    global_step = 0
+
+    if args.resume:
+        print(f"[Resume] Loading checkpoint from {args.resume}", flush=True)
+        ckpt = torch.load(args.resume, map_location=device)
+        state = ckpt["model_state"] if "model_state" in ckpt else ckpt
+        model.load_state_dict(state, strict=False)
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        global_step = ckpt.get("global_step", 0)
+        print(f"[Resume] Resuming from epoch {start_epoch}, global_step {global_step}", flush=True)
 
     metrics_path = args.output_dir / "metrics.csv"
     fieldnames = [
@@ -257,8 +288,18 @@ def train():
     ]
     ensure_metrics_logger(metrics_path, fieldnames)
 
+    if global_step == 0:
+        recovered = get_last_global_step(metrics_path)
+        if recovered > 0:
+            global_step = recovered
+            print(f"[Resume] Recovered global_step={global_step} from metrics.csv", flush=True)
+        elif start_epoch > 1:
+            # Approximate global_step by completed epochs if metrics are missing
+            global_step = (start_epoch - 1) * len(train_loader)
+            print(f"[Resume] Approximating global_step={global_step} from completed epochs", flush=True)
+
     # Initial evaluation before training starts
-    if val_loader:
+    if val_loader and start_epoch == 1:
         print("[Val] Running initial validation before training...", flush=True)
         init_metrics = evaluate(model, val_loader, device, criterion, args.many_hot_weight)
         append_metrics(
@@ -284,8 +325,7 @@ def train():
             flush=True,
         )
 
-    global_step = 0
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         print(f"[Train] Starting epoch {epoch}/{args.epochs}", flush=True)
         pbar = tqdm(enumerate(train_loader, start=1), total=len(train_loader), desc=f"Epoch {epoch}", ncols=120)
