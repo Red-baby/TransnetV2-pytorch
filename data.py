@@ -91,7 +91,19 @@ class ShotDataset(Dataset):
         rng = random.Random(seed)
         self.index: List[Tuple[int, int]] = []  # (entry_idx, start_idx)
         for entry_idx, entry in enumerate(self.entries):
+            if "labels" not in entry:
+                raise ValueError(f"Manifest entry {entry_idx} missing required field: labels")
+
             labels = entry["labels"]
+            if "many_hot_labels" in entry:
+                many_hot_src = entry["many_hot_labels"]
+                if len(many_hot_src) != len(labels):
+                    raise ValueError(
+                        "Manifest label length mismatch for entry "
+                        f"{entry_idx} (frames_dir={entry.get('frames_dir','')!r}, video_path={entry.get('video_path','')!r}): "
+                        f"len(labels)={len(labels)} != len(many_hot_labels)={len(many_hot_src)}"
+                    )
+
             if len(labels) < window:
                 continue
             # 沿用 TF 版策略：以转场锚点为中心取窗口，不足窗口的样本直接跳过
@@ -120,6 +132,9 @@ class ShotDataset(Dataset):
         if "frames_dir" in entry:
             frames_dir = Path(entry["frames_dir"])
             frame_files = sorted(frames_dir.glob("*"))
+            # Keep frame count consistent with label length: if frames are longer than labels,
+            # only use the first len(labels) frames.
+            frame_files = frame_files[: len(entry.get("labels", []))]
             window_files = frame_files[start : start + self.window]
             if len(window_files) != self.window:
                 raise ValueError(f"Not enough frames in {frames_dir} for window starting at {start}.")
