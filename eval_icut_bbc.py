@@ -173,7 +173,7 @@ def build_icut_command(
     return cmd
 
 
-def run_icut(cmd: List[str]) -> None:
+def run_icut(cmd: List[str], *, log_path: Optional[Path] = None) -> None:
     completed = subprocess.run(cmd, capture_output=True, text=True)
     if completed.returncode != 0:
         raise RuntimeError(
@@ -183,6 +183,94 @@ def run_icut(cmd: List[str]) -> None:
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}\n"
         )
+    if log_path is not None and not log_path.exists():
+        raise RuntimeError(
+            "icutcli completed successfully but logfile was not created.\n"
+            f"cmd: {' '.join(cmd)}\n"
+            f"log_path: {log_path}\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}\n"
+        )
+
+
+def decode_mp4_to_yuv420p(
+    video_path: Path,
+    *,
+    yuv_path: Path,
+) -> Tuple[int, int, int]:
+    """
+    Decode a video with OpenCV and write raw YUV420p (I420) frames to yuv_path.
+
+    Returns (width, height, n_frames_written).
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "OpenCV (cv2) is required for --decode-yuv but is not available. "
+            "Install opencv-python (or opencv-python-headless)."
+        ) from e
+
+    def _get_resolution(cap: "cv2.VideoCapture") -> Tuple[int, int]:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"Could not determine video resolution for: {video_path}")
+        return width, height
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video with OpenCV: {video_path}")
+
+    width, height = _get_resolution(cap)
+
+    if (width % 2) != 0 or (height % 2) != 0:
+        raise RuntimeError(
+            f"Video resolution must be even for YUV420p (I420), got {width}x{height}: {video_path}"
+        )
+
+    n_frames = 0
+    yuv_path.parent.mkdir(parents=True, exist_ok=True)
+    with yuv_path.open("wb") as f:
+        while True:
+            ok, frame_bgr = cap.read()
+            if not ok:
+                break
+
+            yuv_i420 = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2YUV_I420)
+            if yuv_i420.shape[1] != width or yuv_i420.shape[0] != (height * 3) // 2:
+                raise RuntimeError(
+                    f"Unexpected I420 buffer shape {yuv_i420.shape} for {width}x{height} ({video_path})"
+                )
+            f.write(yuv_i420.tobytes())
+            n_frames += 1
+
+    cap.release()
+    if n_frames == 0:
+        raise RuntimeError(f"No frames decoded from: {video_path}")
+
+    return width, height, n_frames
+
+
+def get_video_resolution_opencv(video_path: Path) -> Tuple[int, int]:
+    try:
+        import cv2  # type: ignore
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            "OpenCV (cv2) is required for --decode-yuv but is not available. "
+            "Install opencv-python (or opencv-python-headless)."
+        ) from e
+
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video with OpenCV: {video_path}")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"Could not determine video resolution for: {video_path}")
+    return width, height
 
 
 def _positions_of_ones(arr: np.ndarray) -> List[int]:
@@ -216,6 +304,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--icut-min-keyint", type=int, default=None, help="Override --min-keyint.")
     p.add_argument("--icut-bframes", type=int, default=None, help="Override --bframes (mini-GOP size).")
 
+    # optional decode path (mp4 -> raw yuv) to work around icut builds without avcodec demux/decoder support.
+    p.add_argument(
+        "--decode-yuv",
+        action="store_true",
+        help="Decode mp4 via OpenCV and feed raw YUV420p (I420) to icutcli instead of the original video file.",
+    )
+    p.add_argument(
+        "--yuv-dir",
+        type=Path,
+        default=Path("icut_yuv"),
+        help="Temporary directory to store decoded *.yuv files (used with --decode-yuv).",
+    )
+    p.add_argument(
+        "--force-yuv",
+        action="store_true",
+        help="Force re-decode YUV even if the target *.yuv already exists (used with --decode-yuv).",
+    )
+
     # evaluation options
     p.add_argument("--tolerance", type=int, default=2, help="Frame miss tolerance for scene-based evaluation.")
     p.add_argument(
@@ -244,6 +350,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         entries = entries[: args.max_videos]
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
+    if args.decode_yuv:
+        if args.icut_bitdepth != 8:
+            raise ValueError("--decode-yuv currently only supports --icut-bitdepth 8 (OpenCV writes 8-bit I420).")
+        args.yuv_dir.mkdir(parents=True, exist_ok=True)
 
     # totals for per-frame one_hot evaluation against manifest "labels"
     total_tp, total_fp, total_fn = 0, 0, 0
@@ -265,13 +375,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         log_path = args.log_dir / f"{video_path.stem}.icut.log"
 
         try:
+            icut_input_path = video_path
+            icut_width = args.icut_width
+            icut_height = args.icut_height
+
+            if args.decode_yuv:
+                yuv_path = args.yuv_dir / f"{video_path.stem}.yuv"
+                if args.force_yuv or not yuv_path.exists():
+                    width, height, _ = decode_mp4_to_yuv420p(video_path, yuv_path=yuv_path)
+                else:
+                    width, height = get_video_resolution_opencv(video_path)
+
+                icut_input_path = yuv_path
+                icut_width = width
+                icut_height = height
+
             if args.force or not log_path.exists():
                 cmd = build_icut_command(
                     args.icutcli,
-                    video_path=video_path,
+                    video_path=icut_input_path,
                     log_path=log_path,
-                    width=args.icut_width,
-                    height=args.icut_height,
+                    width=icut_width,
+                    height=icut_height,
                     bitdepth=args.icut_bitdepth,
                     shotcut_threshold=args.icut_shotcut,
                     log_level=args.icut_log_level,
@@ -281,7 +406,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     min_keyint=args.icut_min_keyint,
                     bframes=args.icut_bframes,
                 )
-                run_icut(cmd)
+                run_icut(cmd, log_path=log_path)
 
             cut_frames, n_frames_in_log = parse_icut_log(log_path)
 
@@ -366,4 +491,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
