@@ -184,8 +184,13 @@ def predict_video(
 
     flush_windows()
 
-    probs = np.concatenate(all_probs, axis=1).reshape(-1)[:n_frames]
-    many_probs = np.concatenate(all_many_probs, axis=1).reshape(-1)[:n_frames] if have_many else None
+    if not all_probs:
+        raise ValueError("No windows were generated for this video; check window/stride settings and input length.")
+
+    # all_probs contains chunks shaped [batch, stride]; last chunk may have smaller batch,
+    # so concatenate on the window axis, then flatten to a single per-frame sequence.
+    probs = np.concatenate(all_probs, axis=0).reshape(-1)[:n_frames]
+    many_probs = np.concatenate(all_many_probs, axis=0).reshape(-1)[:n_frames] if have_many else None
     return probs, many_probs
 
 
@@ -285,7 +290,10 @@ def main() -> int:
     device = torch.device(args.device)
 
     model = TransNetV2()
-    state = torch.load(args.weights, map_location=device)
+    try:
+        state = torch.load(args.weights, map_location=device, weights_only=True)
+    except TypeError:
+        state = torch.load(args.weights, map_location=device)
     state = state["model_state"] if isinstance(state, dict) and "model_state" in state else state
     model.load_state_dict(state, strict=False)
     model.to(device)
