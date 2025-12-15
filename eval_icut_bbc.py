@@ -357,6 +357,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # totals for per-frame one_hot evaluation against manifest "labels"
     total_tp, total_fp, total_fn = 0, 0, 0
+    # totals for per-frame many_hot evaluation against manifest "many_hot_labels" (or labels if absent)
+    total_tp_many, total_fp_many, total_fn_many = 0, 0, 0
     # totals for scene-based transitions evaluation
     scene_tp, scene_fp, scene_fn = 0, 0, 0
 
@@ -437,6 +439,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             total_tp += int(np.sum((pred_one == 1) & (gt_one == 1)))
             total_fp += int(np.sum((pred_one == 1) & (gt_one == 0)))
             total_fn += int(np.sum((pred_one == 0) & (gt_one == 1)))
+            # Per-frame many_hot (gradual transitions) metrics
+            total_tp_many += int(np.sum((pred_one == 1) & (gt_many == 1)))
+            total_fp_many += int(np.sum((pred_one == 1) & (gt_many == 0)))
+            total_fn_many += int(np.sum((pred_one == 0) & (gt_many == 1)))
 
             # Scene-based metrics (GT from many_hot_labels; pred from icut cut frames)
             gt_scenes = predictions_to_scenes(gt_many)
@@ -468,6 +474,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = total_tp / (total_tp + total_fp + 1e-8)
     r = total_tp / (total_tp + total_fn + 1e-8)
     f1 = 2 * p * r / (p + r + 1e-8)
+    # Per-frame many_hot
+    mp = total_tp_many / (total_tp_many + total_fp_many + 1e-8)
+    mr = total_tp_many / (total_tp_many + total_fn_many + 1e-8)
+    mf1 = 2 * mp * mr / (mp + mr + 1e-8)
 
     # Scene-based transitions
     scene_p = scene_tp / (scene_tp + scene_fp + 1e-8)
@@ -481,6 +491,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"Precision: {p * 100:5.2f}%")
     print(f"Recall:    {r * 100:5.2f}%")
     print(f"F1 Score:  {f1 * 100:5.2f}%")
+    print("")
+    print("[Per-frame many_hot] (icut cut frames vs manifest many_hot_labels)")
+    print(f"Precision: {mp * 100:5.2f}%")
+    print(f"Recall:    {mr * 100:5.2f}%")
+    print(f"F1 Score:  {mf1 * 100:5.2f}%")
     print("")
     print(f"[Scene-based] tolerance={args.tolerance} frames")
     print(f"Precision: {scene_p * 100:5.2f}%")
