@@ -4,6 +4,7 @@ import sys
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import time
 
 import numpy as np
 import torch
@@ -308,11 +309,14 @@ def main() -> int:
     have_many_hot = False
 
     scene_tp, scene_fp, scene_fn = 0, 0, 0
+    total_frames_processed = 0
+    total_seconds = 0.0
 
     for idx, entry in enumerate(entries, start=1):
         src = entry.get("video_path") or entry.get("frames_dir") or f"entry#{idx}"
         print(f"[{idx}/{len(entries)}] {src}", flush=True)
 
+        t0 = time.time()
         probs, many_probs = predict_video(
             model,
             entry,
@@ -322,6 +326,15 @@ def main() -> int:
             stride=args.stride,
             batch_size=args.batch_size,
         )
+        elapsed = time.time() - t0
+        n_frames = len(entry.get("labels", []))
+        total_frames_processed += n_frames
+        total_seconds += elapsed
+        if elapsed > 0:
+            print(f"  Inference time: {elapsed:.2f}s ({n_frames/elapsed:.2f} fps)", flush=True)
+        else:
+            print("  Inference time: <0.01s", flush=True)
+
         if args.save_probs_dir:
             args.save_probs_dir.mkdir(parents=True, exist_ok=True)
             stem = Path(str(src)).stem
@@ -384,6 +397,11 @@ def main() -> int:
     print(f"Precision: {scene_p * 100:5.2f}%")
     print(f"Recall:    {scene_r * 100:5.2f}%")
     print(f"F1 Score:  {scene_f1 * 100:5.2f}%")
+
+    if total_seconds > 0:
+        fps = total_frames_processed / total_seconds
+        print("")
+        print(f"[Speed] Total frames: {total_frames_processed}, wall time: {total_seconds:.2f}s, avg FPS: {fps:.2f}")
 
     return 0
 
