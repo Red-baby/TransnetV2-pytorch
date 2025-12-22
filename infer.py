@@ -1,7 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _read_all_frames_from_dir(
-    frames_dir: Path, resize_hw: Tuple[int, int], max_frames: int | None
+    frames_dir: Path, resize_hw: Tuple[int, int], max_frames: Optional[int]
 ) -> np.ndarray:
     # Lazy import from local module `data` (same directory) so this file can be
     # executed directly from inside the training_pytorch folder or from elsewhere.
@@ -46,7 +46,7 @@ def _read_all_frames_from_dir(
 
 
 def _read_all_frames_from_video(
-    video_path: Path, resize_hw: Tuple[int, int], max_frames: int | None
+    video_path: Path, resize_hw: Tuple[int, int], max_frames: Optional[int]
 ) -> np.ndarray:
     _ensure_cv2()
     import cv2
