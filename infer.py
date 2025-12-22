@@ -101,15 +101,16 @@ def sliding_window_predict(
     scores = torch.zeros(num_frames, device=device)
     counts = torch.zeros(num_frames, device=device)
     total_windows = max(1, ((num_frames - window) // stride) + 1)
-    for idx, start in enumerate(range(0, num_frames - window + 1, stride), start=1):
-        window_frames = frames[start : start + window].unsqueeze(0).to(device)
-        outputs = model(window_frames)
-        logits = outputs[0] if isinstance(outputs, tuple) else outputs
-        probs = torch.sigmoid(logits.squeeze(0).squeeze(-1))  # [window]
-        scores[start : start + window] += probs
-        counts[start : start + window] += 1
-        if idx % 50 == 0 or idx == total_windows:
-            print(f"[Infer] window {idx}/{total_windows}")
+    with torch.no_grad():
+        for idx, start in enumerate(range(0, num_frames - window + 1, stride), start=1):
+            window_frames = frames[start : start + window].unsqueeze(0).to(device)
+            outputs = model(window_frames)
+            logits = outputs[0] if isinstance(outputs, tuple) else outputs
+            probs = torch.sigmoid(logits.squeeze(0).squeeze(-1))  # [window]
+            scores[start : start + window] += probs
+            counts[start : start + window] += 1
+            if idx % 50 == 0 or idx == total_windows:
+                print(f"[Infer] window {idx}/{total_windows}")
     counts = counts.clamp(min=1)
     return scores / counts
 
@@ -126,7 +127,7 @@ def main():
     model.load_state_dict(state, strict=False)
     model.to(device)
 
-    probs = sliding_window_predict(model, frames, args.window, args.stride, device).cpu().numpy()
+    probs = sliding_window_predict(model, frames, args.window, args.stride, device).detach().cpu().numpy()
     boundaries = [i for i, p in enumerate(probs) if p >= args.threshold]
     print(f"Detected {len(boundaries)} boundaries at frames: {boundaries}")
 
