@@ -49,6 +49,8 @@ def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) ->
         raise ValueError(f"Failed to open video: {video_path}")
     frames: List[np.ndarray] = []
     width, height = resize_hw[1], resize_hw[0]
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    print(f"[Decode] Start reading video: {video_path}")
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -56,9 +58,15 @@ def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) ->
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
         frames.append(frame)
+        if len(frames) % 500 == 0:
+            if total > 0:
+                print(f"[Decode] {len(frames)}/{total} frames")
+            else:
+                print(f"[Decode] {len(frames)} frames")
     cap.release()
     if not frames:
         raise ValueError(f"Video {video_path} contained no readable frames.")
+    print(f"[Decode] Done. Total frames: {len(frames)}")
     return np.stack(frames, axis=0).astype(np.uint8)
 
 
@@ -81,13 +89,16 @@ def sliding_window_predict(
         raise ValueError(f"Not enough frames ({num_frames}) for window size {window}.")
     scores = torch.zeros(num_frames, device=device)
     counts = torch.zeros(num_frames, device=device)
-    for start in range(0, num_frames - window + 1, stride):
+    total_windows = max(1, ((num_frames - window) // stride) + 1)
+    for idx, start in enumerate(range(0, num_frames - window + 1, stride), start=1):
         window_frames = frames[start : start + window].unsqueeze(0).to(device)
         outputs = model(window_frames)
         logits = outputs[0] if isinstance(outputs, tuple) else outputs
         probs = torch.sigmoid(logits.squeeze(0).squeeze(-1))  # [window]
         scores[start : start + window] += probs
         counts[start : start + window] += 1
+        if idx % 50 == 0 or idx == total_windows:
+            print(f"[Infer] window {idx}/{total_windows}")
     counts = counts.clamp(min=1)
     return scores / counts
 
