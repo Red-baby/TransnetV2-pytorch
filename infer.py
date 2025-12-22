@@ -24,23 +24,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stride", type=int, default=25, help="Stride between windows.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for boundaries.")
+    parser.add_argument("--max-frames", type=int, help="Only process the first N frames.")
     parser.add_argument("--save-npy", type=Path, help="Optional path to save per-frame probabilities (.npy).")
     return parser.parse_args()
 
 
-def _read_all_frames_from_dir(frames_dir: Path, resize_hw: Tuple[int, int]) -> np.ndarray:
+def _read_all_frames_from_dir(
+    frames_dir: Path, resize_hw: Tuple[int, int], max_frames: int | None
+) -> np.ndarray:
     # Lazy import from local module `data` (same directory) so this file can be
     # executed directly from inside the training_pytorch folder or from elsewhere.
     from data import _read_image  # lazy import to reuse resize+RGB
 
     files = sorted(frames_dir.glob("*"))
+    if max_frames is not None:
+        files = files[:max_frames]
     if not files:
         raise ValueError(f"No frames found in {frames_dir}")
     frames = [_read_image(p, resize_hw) for p in files]
     return np.stack(frames, axis=0).astype(np.uint8)
 
 
-def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) -> np.ndarray:
+def _read_all_frames_from_video(
+    video_path: Path, resize_hw: Tuple[int, int], max_frames: int | None
+) -> np.ndarray:
     _ensure_cv2()
     import cv2
 
@@ -50,6 +57,8 @@ def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) ->
     frames: List[np.ndarray] = []
     width, height = resize_hw[1], resize_hw[0]
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if max_frames is not None and total > 0:
+        total = min(total, max_frames)
     print(f"[Decode] Start reading video: {video_path}")
     while True:
         ok, frame = cap.read()
@@ -58,6 +67,8 @@ def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) ->
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
         frames.append(frame)
+        if max_frames is not None and len(frames) >= max_frames:
+            break
         if len(frames) % 500 == 0:
             if total > 0:
                 print(f"[Decode] {len(frames)}/{total} frames")
@@ -72,8 +83,8 @@ def _read_all_frames_from_video(video_path: Path, resize_hw: Tuple[int, int]) ->
 
 def load_frames(args: argparse.Namespace, resize_hw: Tuple[int, int]) -> np.ndarray:
     if args.frames_dir:
-        return _read_all_frames_from_dir(args.frames_dir, resize_hw)
-    return _read_all_frames_from_video(args.video_path, resize_hw)
+        return _read_all_frames_from_dir(args.frames_dir, resize_hw, args.max_frames)
+    return _read_all_frames_from_video(args.video_path, resize_hw, args.max_frames)
 
 
 def sliding_window_predict(
