@@ -26,6 +26,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=0.5, help="Decision threshold for boundaries.")
     parser.add_argument("--max-frames", type=int, help="Only process the first N frames.")
     parser.add_argument("--save-npy", type=Path, help="Optional path to save per-frame probabilities (.npy).")
+    parser.add_argument(
+        "--max-keyframe",
+        type=int,
+        help="Insert keyframes if scene starts are farther apart than this value.",
+    )
+    parser.add_argument(
+        "--keyframe-txt",
+        type=Path,
+        default=Path("keyframe.txt"),
+        help="Output keyframe list path (one frame index per line).",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        help="If set, append PTS computed from POC using PTS = POC * (1000 / fps).",
+    )
     return parser.parse_args()
 
 
@@ -143,6 +159,43 @@ def main():
         if next_start < len(probs):
             scene_starts.append(next_start)
     print(f"Scene start frames: {scene_starts}")
+
+    if args.max_keyframe:
+        interval = args.max_keyframe
+        if interval <= 0:
+            raise ValueError("--max-keyframe must be > 0")
+        keyframes: List[Tuple[int, int]] = []
+        last = None
+        for start in scene_starts:
+            if last is None:
+                keyframes.append((start, 1))
+                last = start
+                continue
+            while last + interval < start:
+                last += interval
+                keyframes.append((last, 0))
+            if start != last:
+                keyframes.append((start, 1))
+                last = start
+        end_frame = len(probs) - 1
+        while last is not None and last + interval <= end_frame:
+            last += interval
+            if keyframes[-1][0] != last:
+                keyframes.append((last, 0))
+        args.keyframe_txt.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"#{len(keyframes):09d}"]
+        if args.fps:
+            if args.fps <= 0:
+                raise ValueError("--fps must be > 0")
+            ms_per_frame = 1000.0 / args.fps
+            lines.extend(
+                f"{frame} {flag} {int(round(frame * ms_per_frame))}"
+                for frame, flag in keyframes
+            )
+        else:
+            lines.extend(f"{frame} {flag}" for frame, flag in keyframes)
+        args.keyframe_txt.write_text("\n".join(lines), encoding="ascii")
+        print(f"Saved keyframes ({len(keyframes)}) to {args.keyframe_txt}")
 
     if args.save_npy:
         args.save_npy.parent.mkdir(parents=True, exist_ok=True)
