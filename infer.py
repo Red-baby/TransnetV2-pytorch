@@ -34,13 +34,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keyframe-poc",
         type=Path,
-        default=Path("keyframe_POC"),
+        default=Path("keyframe_POC.txt"),
         help="Output keyframe POC list path.",
     )
     parser.add_argument(
         "--keyframe-pts",
         type=Path,
-        default=Path("keyframe_PTS"),
+        default=Path("keyframe_PTS.txt"),
         help="Output keyframe PTS list path (only used with --fps).",
     )
     parser.add_argument(
