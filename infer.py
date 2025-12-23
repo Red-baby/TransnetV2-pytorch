@@ -130,6 +130,16 @@ def main():
     probs = sliding_window_predict(model, frames, args.window, args.stride, device).detach().cpu().numpy()
     boundaries = [i for i, p in enumerate(probs) if p >= args.threshold]
     print(f"Detected {len(boundaries)} boundaries at frames: {boundaries}")
+    scene_starts: List[int] = [0]
+    if boundaries:
+        current = boundaries[0]
+        if current != 0:
+            scene_starts.append(current)
+        for idx in boundaries[1:]:
+            if idx != current + 1:
+                scene_starts.append(idx)
+            current = idx
+    print(f"Scene start frames: {scene_starts}")
 
     if args.save_npy:
         args.save_npy.parent.mkdir(parents=True, exist_ok=True)
