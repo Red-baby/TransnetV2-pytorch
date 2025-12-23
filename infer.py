@@ -32,10 +32,16 @@ def parse_args() -> argparse.Namespace:
         help="Insert keyframes if scene starts are farther apart than this value.",
     )
     parser.add_argument(
-        "--keyframe-txt",
+        "--keyframe-poc",
         type=Path,
-        default=Path("keyframe.txt"),
-        help="Output keyframe list path (one frame index per line).",
+        default=Path("keyframe_POC"),
+        help="Output keyframe POC list path.",
+    )
+    parser.add_argument(
+        "--keyframe-pts",
+        type=Path,
+        default=Path("keyframe_PTS"),
+        help="Output keyframe PTS list path (only used with --fps).",
     )
     parser.add_argument(
         "--fps",
@@ -182,20 +188,24 @@ def main():
             last += interval
             if keyframes[-1][0] != last:
                 keyframes.append((last, 0))
-        args.keyframe_txt.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"#{len(keyframes):09d}"]
+        args.keyframe_poc.parent.mkdir(parents=True, exist_ok=True)
+        poc_lines = [f"#{len(keyframes):09d}"] + [
+            f"{frame} {flag}" for frame, flag in keyframes
+        ]
+        args.keyframe_poc.write_text("\n".join(poc_lines), encoding="ascii")
+        print(f"Saved POC keyframes ({len(keyframes)}) to {args.keyframe_poc}")
+
         if args.fps:
             if args.fps <= 0:
                 raise ValueError("--fps must be > 0")
             ms_per_frame = 1000.0 / args.fps
-            lines.extend(
-                f"{frame} {flag} {int(round(frame * ms_per_frame))}"
+            args.keyframe_pts.parent.mkdir(parents=True, exist_ok=True)
+            pts_lines = [f"#{len(keyframes):09d}"] + [
+                f"{int(round(frame * ms_per_frame))} {flag}"
                 for frame, flag in keyframes
-            )
-        else:
-            lines.extend(f"{frame} {flag}" for frame, flag in keyframes)
-        args.keyframe_txt.write_text("\n".join(lines), encoding="ascii")
-        print(f"Saved keyframes ({len(keyframes)}) to {args.keyframe_txt}")
+            ]
+            args.keyframe_pts.write_text("\n".join(pts_lines), encoding="ascii")
+            print(f"Saved PTS keyframes ({len(keyframes)}) to {args.keyframe_pts}")
 
     if args.save_npy:
         args.save_npy.parent.mkdir(parents=True, exist_ok=True)
