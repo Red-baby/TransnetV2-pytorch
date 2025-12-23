@@ -133,12 +133,15 @@ def main():
     scene_starts: List[int] = [0]
     if boundaries:
         current = boundaries[0]
-        if current != 0:
-            scene_starts.append(current)
         for idx in boundaries[1:]:
             if idx != current + 1:
-                scene_starts.append(idx)
+                next_start = current + 1
+                if next_start < len(probs):
+                    scene_starts.append(next_start)
             current = idx
+        next_start = current + 1
+        if next_start < len(probs):
+            scene_starts.append(next_start)
     print(f"Scene start frames: {scene_starts}")
 
     if args.save_npy:
