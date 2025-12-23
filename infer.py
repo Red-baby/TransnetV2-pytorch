@@ -174,7 +174,8 @@ def main():
         last = None
         for start in scene_starts:
             if last is None:
-                keyframes.append((start, 1))
+                flag = 0 if start == 0 else 1
+                keyframes.append((start, flag))
                 last = start
                 continue
             while last + interval < start:
