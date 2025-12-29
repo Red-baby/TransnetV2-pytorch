@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, help="Only process the first N frames.")
     parser.add_argument("--save-npy", type=Path, help="Optional path to save per-frame probabilities (.npy).")
     parser.add_argument(
+        "--save-prob-txt",
+        type=Path,
+        help="Optional path to save per-frame boundary probabilities (.txt).",
+    )
+    parser.add_argument(
         "--min-keyframe",
         type=int,
         help="Drop scene starts closer than this distance to the previous keyframe.",
@@ -198,6 +203,13 @@ def main():
     model.to(device)
 
     probs = sliding_window_predict(model, frames, args.window, args.stride, device).detach().cpu().numpy()
+    if args.save_prob_txt:
+        args.save_prob_txt.parent.mkdir(parents=True, exist_ok=True)
+        prob_lines = [f"#{len(probs):09d}"] + [
+            f"{idx} {prob:.6f}" for idx, prob in enumerate(probs)
+        ]
+        args.save_prob_txt.write_text("\n".join(prob_lines), encoding="ascii")
+        print(f"Saved per-frame probabilities to {args.save_prob_txt}")
     boundaries = [i for i, p in enumerate(probs) if p >= args.threshold]
     print(f"Detected {len(boundaries)} boundaries at frames: {boundaries}")
     scene_starts: List[int] = [0]
