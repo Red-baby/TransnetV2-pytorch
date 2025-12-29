@@ -147,7 +147,7 @@ def build_keyframes(
     num_frames: int,
     min_keyframe: Optional[int],
     max_keyframe: Optional[int],
-) -> List[Tuple[int, int]]:
+) -> Tuple[List[Tuple[int, int]], List[int]]:
     if min_keyframe is not None and min_keyframe < 0:
         raise ValueError("--min-keyframe must be >= 0")
     if max_keyframe is not None and max_keyframe <= 0:
@@ -155,6 +155,7 @@ def build_keyframes(
 
     min_keyframe = min_keyframe or 0
     keyframes: List[Tuple[int, int]] = []
+    dropped: List[int] = []
     last: Optional[int] = None
 
     for start in scene_starts:
@@ -168,6 +169,7 @@ def build_keyframes(
                 last += max_keyframe
                 keyframes.append((last, 0))
         if min_keyframe and start - last < min_keyframe:
+            dropped.append(start)
             continue
         if start != last:
             keyframes.append((start, 1))
@@ -180,7 +182,7 @@ def build_keyframes(
             if keyframes[-1][0] != last:
                 keyframes.append((last, 0))
 
-    return keyframes
+    return keyframes, dropped
 
 
 def main():
@@ -213,12 +215,16 @@ def main():
     print(f"Scene start frames: {scene_starts}")
 
     if args.min_keyframe is not None or args.max_keyframe is not None:
-        keyframes = build_keyframes(
+        keyframes, dropped = build_keyframes(
             scene_starts,
             len(probs),
             args.min_keyframe,
             args.max_keyframe,
         )
+        if dropped:
+            print(
+                f"Dropped {len(dropped)} scene starts due to --min-keyframe: {dropped}"
+            )
         args.keyframe_poc.parent.mkdir(parents=True, exist_ok=True)
         poc_lines = [f"#{len(keyframes):09d}"] + [
             f"{frame} {flag}" for frame, flag in keyframes
