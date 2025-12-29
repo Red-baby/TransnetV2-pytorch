@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, help="Only process the first N frames.")
     parser.add_argument("--save-npy", type=Path, help="Optional path to save per-frame probabilities (.npy).")
     parser.add_argument(
+        "--min-keyframe",
+        type=int,
+        help="Drop scene starts closer than this distance to the previous keyframe.",
+    )
+    parser.add_argument(
         "--max-keyframe",
         type=int,
         help="Insert keyframes if scene starts are farther apart than this value.",
@@ -137,6 +142,47 @@ def sliding_window_predict(
     return scores / counts
 
 
+def build_keyframes(
+    scene_starts: List[int],
+    num_frames: int,
+    min_keyframe: Optional[int],
+    max_keyframe: Optional[int],
+) -> List[Tuple[int, int]]:
+    if min_keyframe is not None and min_keyframe < 0:
+        raise ValueError("--min-keyframe must be >= 0")
+    if max_keyframe is not None and max_keyframe <= 0:
+        raise ValueError("--max-keyframe must be > 0")
+
+    min_keyframe = min_keyframe or 0
+    keyframes: List[Tuple[int, int]] = []
+    last: Optional[int] = None
+
+    for start in scene_starts:
+        if last is None:
+            flag = 0 if start == 0 else 1
+            keyframes.append((start, flag))
+            last = start
+            continue
+        if max_keyframe:
+            while last + max_keyframe < start:
+                last += max_keyframe
+                keyframes.append((last, 0))
+        if min_keyframe and start - last < min_keyframe:
+            continue
+        if start != last:
+            keyframes.append((start, 1))
+            last = start
+
+    if max_keyframe and last is not None:
+        end_frame = num_frames - 1
+        while last + max_keyframe <= end_frame:
+            last += max_keyframe
+            if keyframes[-1][0] != last:
+                keyframes.append((last, 0))
+
+    return keyframes
+
+
 def main():
     args = parse_args()
     device = torch.device(args.device)
@@ -166,29 +212,13 @@ def main():
             scene_starts.append(next_start)
     print(f"Scene start frames: {scene_starts}")
 
-    if args.max_keyframe:
-        interval = args.max_keyframe
-        if interval <= 0:
-            raise ValueError("--max-keyframe must be > 0")
-        keyframes: List[Tuple[int, int]] = []
-        last = None
-        for start in scene_starts:
-            if last is None:
-                flag = 0 if start == 0 else 1
-                keyframes.append((start, flag))
-                last = start
-                continue
-            while last + interval < start:
-                last += interval
-                keyframes.append((last, 0))
-            if start != last:
-                keyframes.append((start, 1))
-                last = start
-        end_frame = len(probs) - 1
-        while last is not None and last + interval <= end_frame:
-            last += interval
-            if keyframes[-1][0] != last:
-                keyframes.append((last, 0))
+    if args.min_keyframe is not None or args.max_keyframe is not None:
+        keyframes = build_keyframes(
+            scene_starts,
+            len(probs),
+            args.min_keyframe,
+            args.max_keyframe,
+        )
         args.keyframe_poc.parent.mkdir(parents=True, exist_ok=True)
         poc_lines = [f"#{len(keyframes):09d}"] + [
             f"{frame} {flag}" for frame, flag in keyframes
