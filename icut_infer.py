@@ -141,8 +141,10 @@ def run_icutcli(
     log_path = Path(log_path)
     
     # Build icutcli command
+    # Use absolute path to avoid issues with relative paths on Linux
+    icutcli_absolute = icutcli_path.absolute()
     cmd = [
-        str(icutcli_path),
+        str(icutcli_absolute),
         "--input", str(input_path),
         "--width", str(width),
         "--height", str(height),
