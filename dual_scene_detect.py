@@ -231,6 +231,16 @@ def run_icut_detection(
     print("ICUT DETECTION")
     print("=" * 60)
     
+    # Debug: Print icutcli path and check if executable
+    print(f"icutcli path: {icutcli_path}")
+    print(f"icutcli absolute path: {icutcli_path.absolute()}")
+    print(f"icutcli exists: {icutcli_path.exists()}")
+    print(f"icutcli is file: {icutcli_path.is_file()}")
+    if icutcli_path.exists():
+        import os
+        print(f"icutcli is executable: {os.access(icutcli_path, os.X_OK)}")
+    print()
+    
     # Run icutcli
     print(f"Running icutcli on {video_path}...")
     log_path = run_icutcli(
@@ -247,6 +257,7 @@ def run_icut_detection(
         max_frames,
         verbose
     )
+
     
     # Parse log
     print(f"Parsing icut log...")
