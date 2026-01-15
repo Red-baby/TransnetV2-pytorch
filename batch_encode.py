@@ -1,30 +1,27 @@
-#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 批量视频编码脚本
 对 bbc_01 到 bbc_11 使用 transnetv2 和 icut 的 keyframe 列表分别编码
+兼容 Python 2.7
 """
 
+from __future__ import print_function
 import subprocess
 import sys
-from pathlib import Path
+import os
 from datetime import datetime
 
 
 def create_directories():
     """创建必要的目录"""
-    Path("./tmp").mkdir(exist_ok=True)
-    Path("./logs").mkdir(exist_ok=True)
-    print("✓ 目录已创建/确认存在: ./tmp, ./logs\n")
+    if not os.path.exists('./tmp'):
+        os.makedirs('./tmp')
+    if not os.path.exists('./logs'):
+        os.makedirs('./logs')
+    print("OK 目录已创建/确认存在: ./tmp, ./logs\n")
 
 
-def run_encode_command(
-    video_num: int,
-    method: str,
-    input_video: str,
-    keyframe_file: str,
-    output_file: str,
-    log_file: str
-) -> bool:
+def run_encode_command(video_num, method, input_video, keyframe_file, output_file, log_file):
     """
     执行单个编码命令
     
@@ -70,23 +67,23 @@ def run_encode_command(
     
     # 显示当前任务
     print("=" * 70)
-    print(f"视频: bbc_{video_num:02d}")
-    print(f"方法: {method}")
-    print(f"Keyframe: {keyframe_file}")
-    print(f"输出: {output_file}")
-    print(f"日志: {log_file}")
+    print("视频: bbc_{:02d}".format(video_num))
+    print("方法: {}".format(method))
+    print("Keyframe: {}".format(keyframe_file))
+    print("输出: {}".format(output_file))
+    print("日志: {}".format(log_file))
     print("=" * 70)
-    print(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("开始时间: {}".format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
     print()
     
     # 执行命令并保存日志
     try:
-        with open(log_file, "w", encoding="utf-8") as log:
+        with open(log_file, "w") as log:
             # 写入命令信息到日志
-            log.write(f"命令执行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            log.write(f"视频编号: bbc_{video_num:02d}\n")
-            log.write(f"检测方法: {method}\n")
-            log.write(f"命令: {' '.join(cmd)}\n")
+            log.write("命令执行时间: {}\n".format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            log.write("视频编号: bbc_{:02d}\n".format(video_num))
+            log.write("检测方法: {}\n".format(method))
+            log.write("命令: {}\n".format(' '.join(cmd)))
             log.write("=" * 70 + "\n\n")
             log.flush()
             
@@ -100,7 +97,9 @@ def run_encode_command(
             )
             
             # 实时读取输出
-            for line in process.stdout:
+            for line in iter(process.stdout.readline, ''):
+                if line == '':
+                    break
                 print(line, end='')  # 输出到终端
                 log.write(line)      # 写入日志
                 log.flush()
@@ -110,32 +109,35 @@ def run_encode_command(
             
             # 写入结束信息
             end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            log.write(f"\n{'=' * 70}\n")
-            log.write(f"结束时间: {end_time}\n")
-            log.write(f"返回码: {return_code}\n")
+            log.write("\n" + "=" * 70 + "\n")
+            log.write("结束时间: {}\n".format(end_time))
+            log.write("返回码: {}\n".format(return_code))
             
             if return_code == 0:
-                print(f"\n✓ 完成时间: {end_time}")
-                print(f"✓ 成功完成: bbc_{video_num:02d} ({method})\n")
+                print("\nOK 完成时间: {}".format(end_time))
+                print("OK 成功完成: bbc_{:02d} ({})\n".format(video_num, method))
                 return True
             else:
-                print(f"\n✗ 失败时间: {end_time}")
-                print(f"✗ 编码失败: bbc_{video_num:02d} ({method})")
-                print(f"✗ 返回码: {return_code}")
-                print(f"✗ 详细日志: {log_file}\n")
+                print("\nERROR 失败时间: {}".format(end_time))
+                print("ERROR 编码失败: bbc_{:02d} ({})".format(video_num, method))
+                print("ERROR 返回码: {}".format(return_code))
+                print("ERROR 详细日志: {}\n".format(log_file))
                 return False
                 
-    except FileNotFoundError:
-        error_msg = f"错误: 找不到 vtcoder_new 可执行文件"
-        print(f"\n✗ {error_msg}\n")
-        with open(log_file, "a", encoding="utf-8") as log:
-            log.write(f"\n{error_msg}\n")
+    except OSError as e:
+        if e.errno == 2:  # File not found
+            error_msg = "错误: 找不到 vtcoder_new 可执行文件"
+        else:
+            error_msg = "错误: {}".format(str(e))
+        print("\nERROR {}\n".format(error_msg))
+        with open(log_file, "a") as log:
+            log.write("\n{}\n".format(error_msg))
         return False
     except Exception as e:
-        error_msg = f"错误: {str(e)}"
-        print(f"\n✗ {error_msg}\n")
-        with open(log_file, "a", encoding="utf-8") as log:
-            log.write(f"\n{error_msg}\n")
+        error_msg = "错误: {}".format(str(e))
+        print("\nERROR {}\n".format(error_msg))
+        with open(log_file, "a") as log:
+            log.write("\n{}\n".format(error_msg))
         return False
 
 
@@ -144,7 +146,7 @@ def main():
     print("=" * 70)
     print("BBC 视频批量编码脚本")
     print("=" * 70)
-    print(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("开始时间: {}".format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
     print()
     
     # 创建必要的目录
@@ -159,28 +161,28 @@ def main():
     total_tasks = len(video_nums) * len(methods)
     completed_tasks = 0
     
-    print(f"总任务数: {total_tasks} (11 个视频 × 2 种方法)\n")
+    print("总任务数: {} (11 个视频 x 2 种方法)\n".format(total_tasks))
     
     # 循环处理每个视频
     for video_num in video_nums:
-        video_name = f"bbc_{video_num:02d}"
+        video_name = "bbc_{:02d}".format(video_num)
         
         # 对每个视频使用两种方法
         for method in methods:
             completed_tasks += 1
             
-            print(f"\n[进度: {completed_tasks}/{total_tasks}]")
+            print("\n[进度: {}/{}]".format(completed_tasks, total_tasks))
             
             # 构建路径
-            input_video = f"{base_video_path}/{video_name}.mp4"
-            keyframe_file = f"{base_video_path}/{video_name}_keyframe_PTS_{method}.txt"
-            output_file = f"./tmp/{video_name}_{method}.265"
-            log_file = f"./logs/{video_name}_{method}.log"
+            input_video = "{}/{}.mp4".format(base_video_path, video_name)
+            keyframe_file = "{}/{}_keyframe_PTS_{}.txt".format(base_video_path, video_name, method)
+            output_file = "./tmp/{}_{}.265".format(video_name, method)
+            log_file = "./logs/{}_{}.log".format(video_name, method)
             
             # 检查 keyframe 文件是否存在
-            if not Path(keyframe_file).exists():
-                print(f"✗ 错误: Keyframe 文件不存在: {keyframe_file}")
-                print(f"✗ 脚本终止于任务 {completed_tasks}/{total_tasks}\n")
+            if not os.path.exists(keyframe_file):
+                print("ERROR Keyframe 文件不存在: {}".format(keyframe_file))
+                print("ERROR 脚本终止于任务 {}/{}\n".format(completed_tasks, total_tasks))
                 sys.exit(1)
             
             # 执行编码
@@ -196,20 +198,20 @@ def main():
             # 如果失败，停止整个脚本
             if not success:
                 print("=" * 70)
-                print("✗ 编码失败，脚本已终止")
-                print(f"✗ 失败任务: {video_name} ({method})")
-                print(f"✗ 已完成: {completed_tasks - 1}/{total_tasks}")
-                print(f"✗ 详细日志: {log_file}")
+                print("ERROR 编码失败，脚本已终止")
+                print("ERROR 失败任务: {} ({})".format(video_name, method))
+                print("ERROR 已完成: {}/{}".format(completed_tasks - 1, total_tasks))
+                print("ERROR 详细日志: {}".format(log_file))
                 print("=" * 70)
                 sys.exit(1)
     
     # 全部完成
     print("\n" + "=" * 70)
-    print("✓ 所有任务已完成!")
-    print(f"✓ 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"✓ 总计: {completed_tasks}/{total_tasks} 个任务")
-    print(f"✓ 输出目录: ./tmp/")
-    print(f"✓ 日志目录: ./logs/")
+    print("OK 所有任务已完成!")
+    print("OK 完成时间: {}".format(datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+    print("OK 总计: {}/{} 个任务".format(completed_tasks, total_tasks))
+    print("OK 输出目录: ./tmp/")
+    print("OK 日志目录: ./logs/")
     print("=" * 70)
 
 
@@ -217,11 +219,11 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n✗ 用户中断 (Ctrl+C)")
-        print("✗ 脚本已终止")
+        print("\n\nERROR 用户中断 (Ctrl+C)")
+        print("ERROR 脚本已终止")
         sys.exit(130)
     except Exception as e:
-        print(f"\n✗ 未预料的错误: {e}")
+        print("\nERROR 未预料的错误: {}".format(e))
         import traceback
         traceback.print_exc()
         sys.exit(1)
