@@ -30,12 +30,17 @@ def parse_args() -> argparse.Namespace:
         description="Dual scene detection using TransNetV2 and icut."
     )
     
-    # Input
-    parser.add_argument(
+    # Input (mutually exclusive: single video or directory)
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--video-path", 
         type=Path, 
-        required=True, 
-        help="Path to the video file (MP4)."
+        help="Path to a single video file (MP4)."
+    )
+    input_group.add_argument(
+        "--video-dir",
+        type=Path,
+        help="Path to a directory containing video files (processes all .mp4, .mkv, .avi files)."
     )
     
     # Model/Tool paths
@@ -291,7 +296,8 @@ def output_results(
     output_dir: Path, 
     method_name: str, 
     keyframes: List[Tuple[int, int]], 
-    fps: Optional[float]
+    fps: Optional[float],
+    video_name: str = ""
 ) -> None:
     """
     Output keyframe results for one method.
@@ -301,9 +307,13 @@ def output_results(
         method_name: "transnetv2" or "icut"
         keyframes: List of (frame, flag) tuples
         fps: Frame rate for PTS calculation
+        video_name: Video name prefix for output files (optional)
     """
+    # Build filename with optional video name prefix
+    prefix = f"{video_name}_" if video_name else ""
+    
     # Write POC file
-    poc_path = output_dir / f"keyframe_POC_{method_name}.txt"
+    poc_path = output_dir / f"{prefix}keyframe_POC_{method_name}.txt"
     write_keyframe_file(poc_path, keyframes)
     print(f"✓ Saved {len(keyframes)} keyframes to {poc_path}")
     
@@ -313,7 +323,7 @@ def output_results(
         pts_keyframes = [
             (int(round(frame * ms_per_frame)), flag) for frame, flag in keyframes
         ]
-        pts_path = output_dir / f"keyframe_PTS_{method_name}.txt"
+        pts_path = output_dir / f"{prefix}keyframe_PTS_{method_name}.txt"
         write_keyframe_file(pts_path, pts_keyframes)
         print(f"✓ Saved PTS keyframes to {pts_path}")
 
@@ -370,39 +380,39 @@ def generate_comparison_report(
     print(f"  icut only: {len(icut_only)}")
 
 
-def main():
-    args = parse_args()
+def process_single_video(
+    video_path: Path,
+    args: argparse.Namespace,
+    video_name_prefix: str = ""
+) -> None:
+    """
+    Process a single video file.
     
-    # Validate inputs
-    if not args.video_path.exists():
-        print(f"Error: Video file not found: {args.video_path}")
-        sys.exit(1)
-    
-    if not args.transnetv2_weights.exists():
-        print(f"Error: TransNetV2 weights not found: {args.transnetv2_weights}")
-        sys.exit(1)
-    
-    if not args.icutcli_path.exists():
-        print(f"Error: icutcli not found: {args.icutcli_path}")
-        print("Please specify the correct path with --icutcli-path")
-        sys.exit(1)
+    Args:
+        video_path: Path to video file
+        args: Parsed command line arguments
+        video_name_prefix: Prefix for output files (video name without extension)
+    """
+    print("\n" + "=" * 70)
+    print(f"PROCESSING: {video_path.name}")
+    print("=" * 70)
     
     # Detect video parameters
     print("Detecting video parameters...")
-    width, height, fps = detect_video_params(args.video_path)
+    width, height, fps = detect_video_params(video_path)
     if args.fps:
         fps = args.fps
     if not width or not height or not fps:
-        print("Error: Could not detect video parameters.")
-        sys.exit(1)
+        print(f"Error: Could not detect video parameters for {video_path.name}")
+        return
     
-    print(f"Video: {args.video_path.name}")
+    print(f"Video: {video_path.name}")
     print(f"Resolution: {width}x{height}")
     print(f"FPS: {fps:.3f}\n")
     
     # Get total frames
     try:
-        total_frames = get_total_frames(args.video_path)
+        total_frames = get_total_frames(video_path)
         if args.max_frames:
             total_frames = min(total_frames, args.max_frames)
         print(f"Total frames to process: {total_frames}\n")
@@ -412,7 +422,7 @@ def main():
     
     # Run TransNetV2 detection
     transnetv2_scenes = run_transnetv2_detection(
-        args.video_path,
+        video_path,
         args.transnetv2_weights,
         args.transnetv2_threshold,
         args.window,
@@ -426,7 +436,7 @@ def main():
     fps_num = int(fps * 1000)
     fps_denom = 1000
     icut_scenes = run_icut_detection(
-        args.video_path,
+        video_path,
         args.icutcli_path,
         width,
         height,
@@ -480,25 +490,98 @@ def main():
     
     args.output_dir.mkdir(parents=True, exist_ok=True)
     
-    output_results(args.output_dir, "transnetv2", transnetv2_keyframes, fps)
-    output_results(args.output_dir, "icut", icut_keyframes, fps)
+    output_results(args.output_dir, "transnetv2", transnetv2_keyframes, fps, video_name_prefix)
+    output_results(args.output_dir, "icut", icut_keyframes, fps, video_name_prefix)
     
     # Generate comparison report
     if args.compare:
         print("\n" + "=" * 60)
         print("COMPARISON REPORT")
         print("=" * 60)
+        
+        # Add video name to comparison report filename if processing multiple videos
+        if video_name_prefix:
+            comparison_path = args.output_dir / f"{video_name_prefix}_comparison_report.json"
+        else:
+            comparison_path = args.output_dir / "comparison_report.json"
+        
         generate_comparison_report(
             transnetv2_keyframes,
             icut_keyframes,
             args.output_dir,
-            args.video_path,
+            video_path,
             total_frames
         )
+
+
+def main():
+    args = parse_args()
     
-    print("\n" + "=" * 60)
-    print("DONE!")
-    print("=" * 60)
+    # Validate inputs
+    if args.video_path:
+        # Single video mode
+        if not args.video_path.exists():
+            print(f"Error: Video file not found: {args.video_path}")
+            sys.exit(1)
+        video_files = [args.video_path]
+    else:
+        # Directory mode
+        if not args.video_dir.exists() or not args.video_dir.is_dir():
+            print(f"Error: Video directory not found or not a directory: {args.video_dir}")
+            sys.exit(1)
+        
+        # Find all video files in directory
+        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv']
+        video_files = []
+        for ext in video_extensions:
+            video_files.extend(args.video_dir.glob(f'*{ext}'))
+            video_files.extend(args.video_dir.glob(f'*{ext.upper()}'))
+        
+        video_files = sorted(set(video_files))  # Remove duplicates and sort
+        
+        if not video_files:
+            print(f"Error: No video files found in {args.video_dir}")
+            print(f"Supported formats: {', '.join(video_extensions)}")
+            sys.exit(1)
+        
+        print(f"Found {len(video_files)} video(s) to process:")
+        for vf in video_files:
+            print(f"  - {vf.name}")
+        print()
+    
+    if not args.transnetv2_weights.exists():
+        print(f"Error: TransNetV2 weights not found: {args.transnetv2_weights}")
+        sys.exit(1)
+    
+    if not args.icutcli_path.exists():
+        print(f"Error: icutcli not found: {args.icutcli_path}")
+        print("Please specify the correct path with --icutcli-path")
+        sys.exit(1)
+    
+    # Process each video
+    for idx, video_path in enumerate(video_files, 1):
+        # Get video name without extension for file prefix
+        video_name = video_path.stem
+        
+        # Show progress if processing multiple videos
+        if len(video_files) > 1:
+            print(f"\n{'#' * 70}")
+            print(f"# VIDEO {idx}/{len(video_files)}")
+            print(f"{'#' * 70}")
+        
+        try:
+            process_single_video(video_path, args, video_name if len(video_files) > 1 else "")
+        except Exception as e:
+            print(f"\n❌ Error processing {video_path.name}: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            print(f"Skipping {video_path.name} and continuing with next video...\n")
+            continue
+    
+    print("\n" + "=" * 70)
+    print(f"✅ COMPLETED! Processed {len(video_files)} video(s)")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
