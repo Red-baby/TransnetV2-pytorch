@@ -169,27 +169,28 @@ def calculate_region_stats(frames_dict, poc_start, poc_end):
     }
 
 
-def analyze_scene(scene_poc, transnetv2_frames, icut_frames, window=20):
+def analyze_scene(scene_poc, transnetv2_frames, icut_frames):
     """
-    分析单个转场附近的质量
+    分析单个转场附近的质量跳变
+    
+    对比转场前10帧和后10帧的平均 PSNR，衡量质量是否突然变差
     
     Args:
         scene_poc: 转场 POC
         transnetv2_frames: transnetv2 编码的帧信息字典
         icut_frames: icut 编码的帧信息字典
-        window: 分析窗口大小
     
     Returns:
         dict: 分析结果
     """
-    # 定义区域
-    # 前20帧：[scene_poc - 20, scene_poc - 1]
-    # 后20帧（含转场）：[scene_poc, scene_poc + 19]
+    # 定义区域（前后各10帧）
+    # 前10帧：[scene_poc - 10, scene_poc - 1]
+    # 后10帧（含转场）：[scene_poc, scene_poc + 9]
     
-    before_start = scene_poc - window
+    before_start = scene_poc - 10
     before_end = scene_poc - 1
     after_start = scene_poc
-    after_end = scene_poc + window - 1
+    after_end = scene_poc + 9
     
     # 计算 transnetv2 的统计
     tn_before = calculate_region_stats(transnetv2_frames, before_start, before_end)
@@ -199,29 +200,34 @@ def analyze_scene(scene_poc, transnetv2_frames, icut_frames, window=20):
     ic_before = calculate_region_stats(icut_frames, before_start, before_end)
     ic_after = calculate_region_stats(icut_frames, after_start, after_end)
     
-    if not tn_after or not ic_after:
+    if not tn_before or not tn_after or not ic_before or not ic_after:
         return None
+    
+    # 计算质量跳变（后10帧 - 前10帧）
+    tn_quality_drop = tn_after['psnr_mean'] - tn_before['psnr_mean']
+    ic_quality_drop = ic_after['psnr_mean'] - ic_before['psnr_mean']
     
     result = {
         'scene_poc': scene_poc,
         'transnetv2': {
-            'before': tn_before,
-            'after': tn_after
+            'before_10': tn_before,
+            'after_10': tn_after,
+            'quality_drop': tn_quality_drop  # 负值表示质量下降
         },
         'icut': {
-            'before': ic_before,
-            'after': ic_after
+            'before_10': ic_before,
+            'after_10': ic_after,
+            'quality_drop': ic_quality_drop
         },
         'comparison': {
+            # TransNetV2 和 icut 在这个转场处的质量跳变差异
+            'quality_drop_diff': tn_quality_drop - ic_quality_drop,
+            # 后10帧的质量对比
             'psnr_diff_after': tn_after['psnr_mean'] - ic_after['psnr_mean'],
+            # 后10帧的波动对比
             'fluctuation_diff_after': tn_after['fluctuation_mean'] - ic_after['fluctuation_mean']
         }
     }
-    
-    # 如果前20帧数据存在，也添加对比
-    if tn_before and ic_before:
-        result['comparison']['psnr_diff_before'] = tn_before['psnr_mean'] - ic_before['psnr_mean']
-        result['comparison']['fluctuation_diff_before'] = tn_before['fluctuation_mean'] - ic_before['fluctuation_mean']
     
     return result
 
@@ -275,11 +281,11 @@ def analyze_video(video_name, keyframe_dir, logs_dir, fps=25):
     print("  icut:       {} 帧".format(len(ic_frames)))
     
     # 分析每个独有转场
-    print("\n分析独有转场附近质量...")
+    print("\n分析独有转场的质量跳变...")
     scene_analyses = []
     
     for scene_poc in unique_scenes:
-        analysis = analyze_scene(scene_poc, tn_frames, ic_frames, window=20)
+        analysis = analyze_scene(scene_poc, tn_frames, ic_frames)
         if analysis:
             scene_analyses.append(analysis)
     
@@ -287,31 +293,45 @@ def analyze_video(video_name, keyframe_dir, logs_dir, fps=25):
     
     # 打印统计
     if scene_analyses:
-        print("\n转场质量对比汇总:")
+        print("\n转场质量跳变分析:")
         
-        psnr_diffs_after = [a['comparison']['psnr_diff_after'] for a in scene_analyses]
-        fluct_diffs_after = [a['comparison']['fluctuation_diff_after'] for a in scene_analyses]
+        tn_drops = [a['transnetv2']['quality_drop'] for a in scene_analyses]
+        ic_drops = [a['icut']['quality_drop'] for a in scene_analyses]
+        drop_diffs = [a['comparison']['quality_drop_diff'] for a in scene_analyses]
         
-        print("  后20帧平均 PSNR 差异: {:.4f} (TransNetV2 - icut)".format(
-            sum(psnr_diffs_after) / len(psnr_diffs_after)
+        tn_avg_drop = sum(tn_drops) / len(tn_drops)
+        ic_avg_drop = sum(ic_drops) / len(ic_drops)
+        
+        print("\n  转场前后质量变化 (后10帧 - 前10帧):")
+        print("    TransNetV2: {:.4f} dB {}".format(
+            tn_avg_drop,
+            "(下降)" if tn_avg_drop < 0 else "(提升)"
         ))
-        print("  后20帧平均波动差异: {:.4f} (TransNetV2 - icut)".format(
-            sum(fluct_diffs_after) / len(fluct_diffs_after)
+        print("    icut:       {:.4f} dB {}".format(
+            ic_avg_drop,
+            "(下降)" if ic_avg_drop < 0 else "(提升)"
         ))
+        print("    差异:       {:.4f} dB".format(sum(drop_diffs) / len(drop_diffs)))
         
-        # 如果有前20帧数据
-        if 'psnr_diff_before' in scene_analyses[0]['comparison']:
-            psnr_diffs_before = [a['comparison']['psnr_diff_before'] for a in scene_analyses 
-                                 if 'psnr_diff_before' in a['comparison']]
-            fluct_diffs_before = [a['comparison']['fluctuation_diff_before'] for a in scene_analyses 
-                                  if 'fluctuation_diff_before' in a['comparison']]
-            
-            print("  前20帧平均 PSNR 差异: {:.4f} (TransNetV2 - icut)".format(
-                sum(psnr_diffs_before) / len(psnr_diffs_before)
-            ))
-            print("  前20帧平均波动差异: {:.4f} (TransNetV2 - icut)".format(
-                sum(fluct_diffs_before) / len(fluct_diffs_before)
-            ))
+        # 统计明显质量下降的转场（下降超过0.5dB）
+        tn_bad_scenes = sum(1 for d in tn_drops if d < -0.5)
+        ic_bad_scenes = sum(1 for d in ic_drops if d < -0.5)
+        
+        print("\n  明显质量下降的转场数 (>0.5dB):")
+        print("    TransNetV2: {} / {}".format(tn_bad_scenes, len(tn_drops)))
+        print("    icut:       {} / {}".format(ic_bad_scenes, len(ic_drops)))
+        
+        # 后10帧的质量和波动对比
+        psnr_diffs = [a['comparison']['psnr_diff_after'] for a in scene_analyses]
+        fluct_diffs = [a['comparison']['fluctuation_diff_after'] for a in scene_analyses]
+        
+        print("\n  后10帧质量对比:")
+        print("    平均 PSNR 差异: {:.4f} dB (TransNetV2 - icut)".format(
+            sum(psnr_diffs) / len(psnr_diffs)
+        ))
+        print("    平均波动差异:   {:.4f} (TransNetV2 - icut)".format(
+            sum(fluct_diffs) / len(fluct_diffs)
+        ))
     
     return {
         'video_name': video_name,
