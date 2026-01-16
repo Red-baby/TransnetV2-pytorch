@@ -48,22 +48,31 @@ def read_ground_truth(gt_file):
 def parse_q265_log(log_file):
     """
     解析 q265 日志文件，返回按 POC 索引的帧信息
+    只解析第2 pass的数据（第二个 POC=0 的 I 帧之后）
     
     Returns:
-        dict: {poc: {'psnr_y': 42.9368, ...}, ...}
+        dict: {poc: {'vmaf': 96.314, ...}, ...}
     """
     frames = {}
     
+    # 正则表达式匹配 q265 [info]: 行
+    # 格式: q265 [info]:    0  I  17.00    12458   49.7013 50.1797 50.8943   99.3539 99.3072 99.3689   96.314 0.848
+    # VMAF 是倒数第3个数字
     pattern = re.compile(
         r'q265 \[info\]:\s+'
         r'(\d+)\s+'           # POC
         r'([bBPI])\s+'        # 帧类型
         r'([\d.]+)\s+'        # QP
         r'(\d+)\s+'           # 比特数
-        r'([\d.]+)\s+'        # PSNR_Y
-        r'([\d.]+)\s+'        # PSNR_U
-        r'([\d.]+)'           # PSNR_V
+        r'[\d.]+\s+[\d.]+\s+[\d.]+\s+'  # PSNR_Y, PSNR_U, PSNR_V
+        r'[\d.]+\s+[\d.]+\s+[\d.]+\s+'  # SSIM_Y, SSIM_U, SSIM_V
+        r'([\d.]+)\s+'        # VMAF（倒数第3个）
+        r'[\d.]+\s+'          # 倒数第2个
+        r'(\d+)'              # 倒数第1个（比特数？）
     )
+    
+    first_i_frame_found = False  # 标记是否找到第一个 I 帧
+    second_pass_started = False  # 标记是否进入第二个 pass
     
     try:
         with open(log_file, 'r') as f:
@@ -71,13 +80,26 @@ def parse_q265_log(log_file):
                 match = pattern.search(line)
                 if match:
                     poc = int(match.group(1))
-                    frames[poc] = {
-                        'poc': poc,
-                        'type': match.group(2),
-                        'qp': float(match.group(3)),
-                        'bits': int(match.group(4)),
-                        'psnr_y': float(match.group(5))
-                    }
+                    frame_type = match.group(2)
+                    vmaf = float(match.group(5))
+                    
+                    # 检测第二个 pass 的开始
+                    # 第二次遇到 POC=0 的 I 帧时，标记第二个 pass 开始
+                    if poc == 0 and frame_type == 'I':
+                        if not first_i_frame_found:
+                            first_i_frame_found = True
+                        else:
+                            second_pass_started = True
+                    
+                    # 只记录第二个 pass 的数据
+                    if second_pass_started:
+                        frames[poc] = {
+                            'poc': poc,
+                            'type': frame_type,
+                            'qp': float(match.group(3)),
+                            'bits': int(match.group(4)),
+                            'vmaf': vmaf
+                        }
     except IOError as e:
         print("ERROR 无法读取日志文件: {}".format(log_file))
         return {}
@@ -87,7 +109,7 @@ def parse_q265_log(log_file):
 
 def calculate_scene_quality(frames_dict, scene_start, window=20):
     """
-    计算转场后指定帧数的平均 PSNR
+    计算转场后指定帧数的平均 VMAF
     
     Args:
         frames_dict: 帧信息字典
@@ -97,21 +119,21 @@ def calculate_scene_quality(frames_dict, scene_start, window=20):
     Returns:
         dict: 统计信息
     """
-    psnr_values = []
+    vmaf_values = []
     
     # 提取转场后的帧 [scene_start, scene_start + window - 1]
     for poc in range(scene_start, scene_start + window):
         if poc in frames_dict:
-            psnr_values.append(frames_dict[poc]['psnr_y'])
+            vmaf_values.append(frames_dict[poc]['vmaf'])
     
-    if not psnr_values:
+    if not vmaf_values:
         return None
     
     return {
-        'count': len(psnr_values),
-        'psnr_mean': sum(psnr_values) / len(psnr_values),
-        'psnr_min': min(psnr_values),
-        'psnr_max': max(psnr_values)
+        'count': len(vmaf_values),
+        'vmaf_mean': sum(vmaf_values) / len(vmaf_values),
+        'vmaf_min': min(vmaf_values),
+        'vmaf_max': max(vmaf_values)
     }
 
 
@@ -163,7 +185,7 @@ def analyze_video(video_name, gt_dir, logs_dir):
                 'scene_poc': scene_poc,
                 'transnetv2': tn_stats,
                 'icut': ic_stats,
-                'psnr_diff': tn_stats['psnr_mean'] - ic_stats['psnr_mean']
+                'vmaf_diff': tn_stats['vmaf_mean'] - ic_stats['vmaf_mean']
             }
             scene_analyses.append(analysis)
     
@@ -171,22 +193,22 @@ def analyze_video(video_name, gt_dir, logs_dir):
     
     # 统计结果
     if scene_analyses:
-        tn_psnr_list = [a['transnetv2']['psnr_mean'] for a in scene_analyses]
-        ic_psnr_list = [a['icut']['psnr_mean'] for a in scene_analyses]
-        psnr_diffs = [a['psnr_diff'] for a in scene_analyses]
+        tn_vmaf_list = [a['transnetv2']['vmaf_mean'] for a in scene_analyses]
+        ic_vmaf_list = [a['icut']['vmaf_mean'] for a in scene_analyses]
+        vmaf_diffs = [a['vmaf_diff'] for a in scene_analyses]
         
-        tn_avg = sum(tn_psnr_list) / len(tn_psnr_list)
-        ic_avg = sum(ic_psnr_list) / len(ic_psnr_list)
+        tn_avg = sum(tn_vmaf_list) / len(tn_vmaf_list)
+        ic_avg = sum(ic_vmaf_list) / len(ic_vmaf_list)
         
-        print("\n真实转场后20帧质量统计:")
-        print("  TransNetV2: 平均 PSNR = {:.4f} dB".format(tn_avg))
-        print("  icut:       平均 PSNR = {:.4f} dB".format(ic_avg))
-        print("  差异:       {:.4f} dB (TransNetV2 - icut)".format(tn_avg - ic_avg))
+        print("\n真实转场后20帧质量统计 (VMAF):")
+        print("  TransNetV2: 平均 VMAF = {:.4f}".format(tn_avg))
+        print("  icut:       平均 VMAF = {:.4f}".format(ic_avg))
+        print("  差异:       {:.4f} (TransNetV2 - icut)".format(tn_avg - ic_avg))
         
         # 统计谁在更多转场处质量更高
-        tn_wins = sum(1 for d in psnr_diffs if d > 0)
-        ic_wins = sum(1 for d in psnr_diffs if d < 0)
-        ties = len(psnr_diffs) - tn_wins - ic_wins
+        tn_wins = sum(1 for d in vmaf_diffs if d > 0)
+        ic_wins = sum(1 for d in vmaf_diffs if d < 0)
+        ties = len(vmaf_diffs) - tn_wins - ic_wins
         
         print("\n  单转场对比:")
         print("    TransNetV2 胜: {} 个转场".format(tn_wins))
@@ -197,9 +219,9 @@ def analyze_video(video_name, gt_dir, logs_dir):
         return {
             'video_name': video_name,
             'scene_count': len(scene_analyses),
-            'transnetv2_avg_psnr': tn_avg,
-            'icut_avg_psnr': ic_avg,
-            'psnr_diff': tn_avg - ic_avg,
+            'transnetv2_avg_vmaf': tn_avg,
+            'icut_avg_vmaf': ic_avg,
+            'vmaf_diff': tn_avg - ic_avg,
             'transnetv2_wins': tn_wins,
             'icut_wins': ic_wins,
             'scene_analyses': scene_analyses
@@ -248,16 +270,16 @@ def main():
         total_tn_wins = sum(r['transnetv2_wins'] for r in all_results)
         total_ic_wins = sum(r['icut_wins'] for r in all_results)
         
-        # 计算所有视频的平均 PSNR
-        all_tn_psnr = sum(r['transnetv2_avg_psnr'] * r['scene_count'] for r in all_results) / total_scenes
-        all_ic_psnr = sum(r['icut_avg_psnr'] * r['scene_count'] for r in all_results) / total_scenes
+        # 计算所有视频的平均 VMAF
+        all_tn_vmaf = sum(r['transnetv2_avg_vmaf'] * r['scene_count'] for r in all_results) / total_scenes
+        all_ic_vmaf = sum(r['icut_avg_vmaf'] * r['scene_count'] for r in all_results) / total_scenes
         
         print("  分析视频数: {}".format(len(all_results)))
         print("  真实转场总数: {}".format(total_scenes))
-        print("\n  转场后20帧平均 PSNR:")
-        print("    TransNetV2: {:.4f} dB".format(all_tn_psnr))
-        print("    icut:       {:.4f} dB".format(all_ic_psnr))
-        print("    差异:       {:.4f} dB".format(all_tn_psnr - all_ic_psnr))
+        print("\n  转场后20帧平均 VMAF:")
+        print("    TransNetV2: {:.4f}".format(all_tn_vmaf))
+        print("    icut:       {:.4f}".format(all_ic_vmaf))
+        print("    差异:       {:.4f}".format(all_tn_vmaf - all_ic_vmaf))
         
         print("\n  单转场质量对比:")
         print("    TransNetV2 胜: {} / {} ({:.1f}%)".format(
@@ -268,8 +290,8 @@ def main():
         ))
         
         # 按视频统计
-        tn_video_wins = sum(1 for r in all_results if r['psnr_diff'] > 0)
-        ic_video_wins = sum(1 for r in all_results if r['psnr_diff'] < 0)
+        tn_video_wins = sum(1 for r in all_results if r['vmaf_diff'] > 0)
+        ic_video_wins = sum(1 for r in all_results if r['vmaf_diff'] < 0)
         
         print("\n  视频级别对比:")
         print("    TransNetV2 胜: {} / {} 个视频".format(tn_video_wins, len(all_results)))
@@ -279,9 +301,9 @@ def main():
         summary = {
             'total_videos': len(all_results),
             'total_scenes': total_scenes,
-            'overall_transnetv2_psnr': all_tn_psnr,
-            'overall_icut_psnr': all_ic_psnr,
-            'overall_psnr_diff': all_tn_psnr - all_ic_psnr,
+            'overall_transnetv2_vmaf': all_tn_vmaf,
+            'overall_icut_vmaf': all_ic_vmaf,
+            'overall_vmaf_diff': all_tn_vmaf - all_ic_vmaf,
             'transnetv2_scene_wins': total_tn_wins,
             'icut_scene_wins': total_ic_wins,
             'transnetv2_video_wins': tn_video_wins,
